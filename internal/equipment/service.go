@@ -79,30 +79,27 @@ func (s *Service) Return(ctx context.Context, p domain.Principal, requestID stri
 	if req.Damaged && (strings.TrimSpace(req.DamageCode) == "" || strings.TrimSpace(req.Responsibility) == "") {
 		return nil, domain.NewError(domain.KindInvalid, "damage_details_required", "damaged returns require a damage code and responsibility")
 	}
-	var loan domain.EquipmentLoan
-	var equipment domain.Equipment
+	var maintenance *domain.MaintenanceCase
 	err := s.store.InTx(ctx, func(tx *sql.Tx) error {
-		var err error
-		loan, equipment, err = s.store.ActiveLoan(ctx, tx, req.LoanID)
+		loan, equipment, err := s.store.ActiveLoan(ctx, tx, req.LoanID)
 		if err != nil {
 			return err
 		}
 		if err := domain.ValidateTransition("loan", loan.Status, map[bool]string{true: "damaged", false: "returned"}[req.Damaged]); err != nil {
 			return err
 		}
-		return nil
+		maintenance, err = s.store.CompleteReturn(ctx, tx, loan, equipment, p.AccountID, req.Damaged, req.DamageCode, req.Responsibility, req.Notes)
+		if err != nil {
+			return err
+		}
+		detail := map[string]any{"loan_id": loan.ID, "damaged": req.Damaged}
+		if maintenance != nil {
+			detail["maintenance_id"] = maintenance.ID
+		}
+		return s.audit.Record(ctx, tx, p.AccountID, requestID, "equipment", equipment.ID, "equipment.returned", "success", detail)
 	})
 	if err != nil {
 		return nil, err
 	}
-	maintenance, err := s.store.CompleteReturnAtomic(ctx, loan, equipment, p.AccountID, req.Damaged, req.DamageCode, req.Responsibility, req.Notes)
-	if err != nil {
-		return nil, err
-	}
-	detail := map[string]any{"loan_id": loan.ID, "damaged": req.Damaged}
-	if maintenance != nil {
-		detail["maintenance_id"] = maintenance.ID
-	}
-	err = s.audit.RecordStandalone(ctx, p.AccountID, requestID, "equipment", equipment.ID, "equipment.returned", "success", detail)
-	return maintenance, err
+	return maintenance, nil
 }
