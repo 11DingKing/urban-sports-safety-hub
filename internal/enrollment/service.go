@@ -61,12 +61,9 @@ func (s *Service) Enroll(ctx context.Context, principal domain.Principal, reques
 	if !snapshot.CoachQualified {
 		return domain.Enrollment{}, domain.NewError(domain.KindForbidden, "coach_unqualified", "coach qualification does not cover the course")
 	}
-	if err := s.store.ReserveCourseSeat(ctx, snapshot); err != nil {
-		return domain.Enrollment{}, err
-	}
 	var result domain.Enrollment
 	err = s.store.InTx(ctx, func(tx *sql.Tx) error {
-		result, err = s.store.CreateEnrollment(ctx, tx, req.StudentID, snapshot, req.IdempotencyKey)
+		result, err = s.store.ReserveEnrollment(ctx, tx, req.StudentID, snapshot, req.IdempotencyKey)
 		if err != nil {
 			return err
 		}

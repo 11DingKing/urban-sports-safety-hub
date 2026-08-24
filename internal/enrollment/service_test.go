@@ -107,6 +107,41 @@ func TestEnrollIsIdempotentForRepeatedRequestKey(t *testing.T) {
 	}
 }
 
+func TestEnrollDuplicateLeavesCapacityUnchangedForOtherStudent(t *testing.T) {
+	f := newEnrollmentFixture(t)
+	p := principal(f.guardianAccount, domain.RoleGuardian)
+	if _, err := f.service.Enroll(context.Background(), p, "req-first", Request{StudentID: f.student, SessionID: f.session, IdempotencyKey: "first-key"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.service.Enroll(context.Background(), p, "req-dup", Request{StudentID: f.student, SessionID: f.session, IdempotencyKey: "second-key"})
+	if err == nil {
+		t.Fatal("expected duplicate enrollment to fail")
+	}
+	var enrolled, version int
+	if err := f.store.DB().QueryRow(`SELECT enrolled,version FROM course_sessions WHERE id=?`, f.session).Scan(&enrolled, &version); err != nil {
+		t.Fatal(err)
+	}
+	if enrolled != 1 || version != 2 {
+		t.Fatalf("leaked seat: enrolled=%d version=%d", enrolled, version)
+	}
+	var audits int
+	_ = f.store.DB().QueryRow(`SELECT COUNT(*) FROM audit_events WHERE request_id='req-dup'`).Scan(&audits)
+	if audits != 0 {
+		t.Fatalf("leaked audit events=%d", audits)
+	}
+	second := insert(t, f.store.DB(), `INSERT INTO students(guardian_id,name,birth_date,shoe_size,helmet_size,created_at) VALUES(?,'Second',?,'38','M',?)`, f.guardian, stamp(enrollmentNow.AddDate(-12, 0, 0)), stamp(enrollmentNow))
+	insert(t, f.store.DB(), `INSERT INTO guardian_consents(student_id,guardian_id,scope,granted_at,expires_at) VALUES(?,?,'sports_participation',?,?)`, second, f.guardian, stamp(enrollmentNow.Add(-time.Hour)), stamp(enrollmentNow.AddDate(0, 1, 0)))
+	if _, err := f.service.Enroll(context.Background(), p, "req-other", Request{StudentID: second, SessionID: f.session, IdempotencyKey: "other-key"}); err != nil {
+		t.Fatalf("second student blocked by leaked seat: %v", err)
+	}
+	if err := f.store.DB().QueryRow(`SELECT enrolled FROM course_sessions WHERE id=?`, f.session).Scan(&enrolled); err != nil {
+		t.Fatal(err)
+	}
+	if enrolled != 2 {
+		t.Fatalf("enrolled=%d want 2", enrolled)
+	}
+}
+
 func TestEnrollRejectsIdempotencyKeyReuseForDifferentPayload(t *testing.T) {
 	f := newEnrollmentFixture(t)
 	p := principal(f.guardianAccount, domain.RoleGuardian)

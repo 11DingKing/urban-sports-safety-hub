@@ -63,18 +63,6 @@ func (s *Store) CurrentEnrollmentSnapshot(ctx context.Context, studentID, sessio
 	return s.enrollmentSnapshot(ctx, s.db, studentID, sessionID, at)
 }
 
-func (s *Store) ReserveCourseSeat(ctx context.Context, snapshot EnrollmentSnapshot) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE course_sessions SET enrolled=enrolled+1,version=version+1 WHERE id=? AND version=? AND status='scheduled' AND enrolled<capacity`, snapshot.Session.ID, snapshot.Session.Version)
-	if err != nil {
-		return err
-	}
-	changed, _ := result.RowsAffected()
-	if changed != 1 {
-		return domain.ErrConflict
-	}
-	return nil
-}
-
 func (s *Store) ReserveEnrollment(ctx context.Context, tx *sql.Tx, studentID int64, snapshot EnrollmentSnapshot, key string) (domain.Enrollment, error) {
 	result, err := tx.ExecContext(ctx, `UPDATE course_sessions SET enrolled=enrolled+1,version=version+1 WHERE id=? AND version=? AND status='scheduled' AND enrolled<capacity`, snapshot.Session.ID, snapshot.Session.Version)
 	if err != nil {
