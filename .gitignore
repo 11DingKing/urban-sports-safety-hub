@@ -1,0 +1,7 @@
+/.gomark-authoring/
+/.data/
+/sports-hub
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
