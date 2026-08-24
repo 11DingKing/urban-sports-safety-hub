@@ -36,10 +36,10 @@ func (s *Service) Assign(ctx context.Context, p domain.Principal, requestID stri
 	if snapshot.MemberCount >= snapshot.Capacity {
 		return domain.NewError(domain.KindConflict, "group_full", "training group is full")
 	}
-	if err := s.store.ReserveTrainingGroup(ctx, req.GroupID, req.ExpectedGroupVersion); err != nil {
-		return err
-	}
 	return s.store.InTx(ctx, func(tx *sql.Tx) error {
+		if err := s.store.ReserveTrainingGroup(ctx, tx, req.GroupID, req.ExpectedGroupVersion); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO group_members(group_id,enrollment_id,assigned_at) VALUES(?,?,?)`, req.GroupID, req.EnrollmentID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}

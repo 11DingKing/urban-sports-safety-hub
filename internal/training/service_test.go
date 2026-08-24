@@ -15,6 +15,7 @@ type trainingFixture struct {
 	store                                         *dbstore.Store
 	service                                       *Service
 	coachAccount, otherAccount, enrollment, group int64
+	session, coach, student                        int64
 }
 
 func newTrainingFixture(t *testing.T) trainingFixture {
@@ -31,10 +32,13 @@ func newTrainingFixture(t *testing.T) trainingFixture {
 	student := tinsert(t, store.DB(), `INSERT INTO students(guardian_id,name,birth_date,shoe_size,helmet_size,created_at) VALUES(?,'Student',?,'38','M',?)`, guardian, tts(now.AddDate(-12, 0, 0)), tts(now))
 	f.coachAccount = tinsert(t, store.DB(), `INSERT INTO accounts(email,password_hash,display_name,role,active,created_at) VALUES('coach@test','h','Coach','coach',1,?)`, tts(now))
 	coach := tinsert(t, store.DB(), `INSERT INTO coaches(account_id,emergency_phone,created_at) VALUES(?,'2',?)`, f.coachAccount, tts(now))
+	f.coach = coach
 	f.otherAccount = tinsert(t, store.DB(), `INSERT INTO accounts(email,password_hash,display_name,role,active,created_at) VALUES('other@test','h','Other','coach',1,?)`, tts(now))
 	template := tinsert(t, store.DB(), `INSERT INTO course_templates(name,sport,level,minimum_age,capacity,coach_ratio,required_certification) VALUES('Disc','flying_disc',1,8,10,5,'')`)
 	session := tinsert(t, store.DB(), `INSERT INTO course_sessions(template_id,coach_id,starts_at,ends_at,status,capacity) VALUES(?,?,?,?, 'scheduled',10)`, template, coach, tts(now.Add(time.Hour)), tts(now.Add(2*time.Hour)))
+	f.session = session
 	f.enrollment = tinsert(t, store.DB(), `INSERT INTO enrollments(session_id,student_id,status,idempotency_key,created_at) VALUES(?,?,'confirmed','group-source',?)`, session, student, tts(now))
+	f.student = student
 	f.group = tinsert(t, store.DB(), `INSERT INTO training_groups(session_id,coach_id,name,capacity) VALUES(?,?,'A',1)`, session, coach)
 	f.service = New(store, audit.New(store))
 	return f
@@ -107,4 +111,30 @@ func TestAssignRejectsGuardianRole(t *testing.T) {
 	if tcode(err) != "group_assignment_forbidden" {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+func TestAssignFailedDuplicateDoesNotConsumeVersion(t *testing.T) {
+	f := newTrainingFixture(t)
+	advanced := tinsert(t, f.store.DB(), `INSERT INTO training_groups(session_id,coach_id,name,capacity) VALUES(?,?,'Advanced',2)`, f.session, f.coach)
+	tinsert(t, f.store.DB(), `INSERT INTO group_members(group_id,enrollment_id,assigned_at) VALUES(?,?,?)`, f.group, f.enrollment, tts(time.Now().UTC()))
+	coach := domain.Principal{AccountID: f.coachAccount, Role: domain.RoleCoach}
+	err := f.service.Assign(context.Background(), coach, "duplicate", AssignRequest{EnrollmentID: f.enrollment, GroupID: advanced, ExpectedGroupVersion: 1})
+	if err == nil {
+		t.Fatal("expected duplicate assignment to fail")
+	}
+	var version int
+	_ = f.store.DB().QueryRow(`SELECT version FROM training_groups WHERE id=?`, advanced).Scan(&version)
+	if version != 1 {
+		t.Fatalf("failed duplicate consumed version: got %d want 1", version)
+	}
+	secondStudent := tinsert(t, f.store.DB(), `INSERT INTO students(guardian_id,name,birth_date,shoe_size,helmet_size,created_at) VALUES(?,'Second',?,'38','M',?)`, f.guardianID(), tts(time.Now().UTC().AddDate(-12, 0, 0)), tts(time.Now().UTC()))
+	second := tinsert(t, f.store.DB(), `INSERT INTO enrollments(session_id,student_id,status,idempotency_key,created_at) VALUES(?,?,'confirmed','group-second',?)`, f.session, secondStudent, tts(time.Now().UTC()))
+	err = f.service.Assign(context.Background(), coach, "second", AssignRequest{EnrollmentID: second, GroupID: advanced, ExpectedGroupVersion: 1})
+	if err != nil {
+		t.Fatalf("legitimate assignment after failed duplicate: %v", err)
+	}
+}
+func (f trainingFixture) guardianID() int64 {
+	var id int64
+	_ = f.store.DB().QueryRow(`SELECT id FROM guardians LIMIT 1`).Scan(&id)
+	return id
 }

@@ -31,8 +31,8 @@ func (s *Store) TrainingAssignmentSnapshot(ctx context.Context, groupID, enrollm
 	return snapshot, err
 }
 
-func (s *Store) ReserveTrainingGroup(ctx context.Context, groupID int64, expectedVersion int) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE training_groups SET version=version+1 WHERE id=? AND version=?`, groupID, expectedVersion)
+func (s *Store) ReserveTrainingGroup(ctx context.Context, tx *sql.Tx, groupID int64, expectedVersion int) error {
+	result, err := tx.ExecContext(ctx, `UPDATE training_groups SET version=version+1 WHERE id=? AND version=?`, groupID, expectedVersion)
 	if err != nil {
 		return err
 	}
