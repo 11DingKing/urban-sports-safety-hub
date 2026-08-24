@@ -96,6 +96,25 @@ func TestCheckoutRequiresEquipmentManagerOrAdministrator(t *testing.T) {
 	}
 }
 
+func TestCheckoutAuditFailureRollsBackAssetReservationAndKeepsAssetAvailable(t *testing.T) {
+	f := newEquipmentFixture(t)
+	// An empty request id makes audit persistence reject the trace, failing the
+	// business transaction after the equipment has been reserved.
+	_, err := f.service.Checkout(context.Background(), ep(f.manager, domain.RoleEquipmentManager), "", CheckoutRequest{EquipmentID: f.equipment, StudentID: f.student, SessionID: f.session})
+	if ecode(err) != "invalid_audit" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertAssetAvailable(t, f.store.DB(), f.equipment)
+	// The asset must remain checkable once a subsequent, well-formed request succeeds.
+	loan, err := f.service.Checkout(context.Background(), ep(f.manager, domain.RoleEquipmentManager), "retry-request", CheckoutRequest{EquipmentID: f.equipment, StudentID: f.student, SessionID: f.session})
+	if err != nil {
+		t.Fatalf("retry checkout: %v", err)
+	}
+	if loan.Status != "active" {
+		t.Fatalf("loan status=%s", loan.Status)
+	}
+}
+
 func TestCheckoutRejectsInvalidIdentifiers(t *testing.T) {
 	f := newEquipmentFixture(t)
 	cases := []CheckoutRequest{{StudentID: f.student, SessionID: f.session}, {EquipmentID: f.equipment, SessionID: f.session}, {EquipmentID: f.equipment, StudentID: f.student}}

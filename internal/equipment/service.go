@@ -62,15 +62,13 @@ func (s *Service) Checkout(ctx context.Context, p domain.Principal, requestID st
 	if snapshot.Equipment.Size != expectedSize {
 		return domain.EquipmentLoan{}, domain.NewError(domain.KindForbidden, "equipment_fit_mismatch", "equipment does not fit the student")
 	}
-	if err := s.store.ReserveEquipment(ctx, snapshot); err != nil {
-		return domain.EquipmentLoan{}, err
-	}
 	var loan domain.EquipmentLoan
 	err = s.store.InTx(ctx, func(tx *sql.Tx) error {
-		loan, err = s.store.CreateEquipmentLoan(ctx, tx, snapshot, p.AccountID)
+		acquired, err := s.store.AcquireEquipment(ctx, tx, snapshot, p.AccountID)
 		if err != nil {
 			return err
 		}
+		loan = acquired
 		return s.audit.Record(ctx, tx, p.AccountID, requestID, "equipment", req.EquipmentID, "equipment.checked_out", "success", map[string]any{"loan_id": loan.ID, "student_id": req.StudentID})
 	})
 	return loan, err

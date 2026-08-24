@@ -54,18 +54,6 @@ func (s *Store) CurrentCheckoutSnapshot(ctx context.Context, equipmentID, studen
 	return s.CheckoutSnapshot(ctx, s.db, equipmentID, studentID, sessionID, now)
 }
 
-func (s *Store) ReserveEquipment(ctx context.Context, snapshot CheckoutSnapshot) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE equipment SET status='checked_out',version=version+1 WHERE id=? AND version=? AND status='available'`, snapshot.Equipment.ID, snapshot.Equipment.Version)
-	if err != nil {
-		return err
-	}
-	changed, _ := result.RowsAffected()
-	if changed != 1 {
-		return domain.ErrConflict
-	}
-	return nil
-}
-
 func (s *Store) AcquireEquipment(ctx context.Context, tx *sql.Tx, snapshot CheckoutSnapshot, actorID int64) (domain.EquipmentLoan, error) {
 	result, err := tx.ExecContext(ctx, `UPDATE equipment SET status='checked_out',version=version+1 WHERE id=? AND version=? AND status='available'`, snapshot.Equipment.ID, snapshot.Equipment.Version)
 	if err != nil {
