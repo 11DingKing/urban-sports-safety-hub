@@ -296,6 +296,36 @@ func TestCancelCourseCreatesMakeupsAndAuditInOneTransaction(t *testing.T) {
 	}
 }
 
+type failingAuditRecorder struct{ err error }
+
+func (f failingAuditRecorder) Record(context.Context, *sql.Tx, int64, string, string, int64, string, string, any) error {
+	return f.err
+}
+
+func TestCancelCourseRollsBackEverythingWhenAuditFails(t *testing.T) {
+	f := newEnrollmentFixture(t)
+	p := principal(f.guardianAccount, domain.RoleGuardian)
+	enrolled, err := f.service.Enroll(context.Background(), p, "enroll", Request{StudentID: f.student, SessionID: f.session, IdempotencyKey: "audit-fail-source"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing := &Service{store: f.store, audit: failingAuditRecorder{err: errors.New("audit store temporarily rejected write")}, now: func() time.Time { return enrollmentNow }}
+	_, err = failing.CancelCourse(context.Background(), principal(f.guardianAccount, domain.RoleAdministrator), "audit-fail", f.session, "unsafe weather")
+	if err == nil {
+		t.Fatal("expected cancellation to fail when audit write fails")
+	}
+	var sessionStatus, sessionReason, enrollmentStatus string
+	var version int
+	_ = f.store.DB().QueryRow(`SELECT status,cancel_reason,version FROM course_sessions WHERE id=?`, f.session).Scan(&sessionStatus, &sessionReason, &version)
+	_ = f.store.DB().QueryRow(`SELECT status FROM enrollments WHERE id=?`, enrolled.ID).Scan(&enrollmentStatus)
+	var makeups, audits int
+	_ = f.store.DB().QueryRow(`SELECT COUNT(*) FROM makeup_entitlements WHERE canceled_session_id=?`, f.session).Scan(&makeups)
+	_ = f.store.DB().QueryRow(`SELECT COUNT(*) FROM audit_events WHERE request_id='audit-fail'`).Scan(&audits)
+	if sessionStatus != "scheduled" || sessionReason != "" || enrollmentStatus != "confirmed" || makeups != 0 || audits != 0 {
+		t.Fatalf("partial commit survived rollback: session=%s reason=%q enrollment=%s makeups=%d audits=%d", sessionStatus, sessionReason, enrollmentStatus, makeups, audits)
+	}
+}
+
 func TestCancelCourseRequiresAdministratorAndReason(t *testing.T) {
 	f := newEnrollmentFixture(t)
 	if _, err := f.service.CancelCourse(context.Background(), principal(f.coachAccount, domain.RoleCoach), "req", f.session, "reason"); errorCode(err) != "cancel_forbidden" {

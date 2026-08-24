@@ -3,6 +3,7 @@ package enrollment
 import (
 	"context"
 	"database/sql"
+
 	"github.com/11DingKing/urban-sports-safety-hub/internal/audit"
 	"github.com/11DingKing/urban-sports-safety-hub/internal/domain"
 	dbstore "github.com/11DingKing/urban-sports-safety-hub/internal/storage/sqlite"
@@ -10,9 +11,15 @@ import (
 	"time"
 )
 
+// auditRecorder writes audit events so privileged mutations can record them
+// inside the business transaction. The concrete audit.Service satisfies it.
+type auditRecorder interface {
+	Record(ctx context.Context, tx *sql.Tx, actorID int64, requestID, objectType string, objectID int64, action, result string, detail any) error
+}
+
 type Service struct {
 	store *dbstore.Store
-	audit *audit.Service
+	audit auditRecorder
 	now   func() time.Time
 }
 type Request struct {
@@ -86,10 +93,17 @@ func (s *Service) CancelCourse(ctx context.Context, principal domain.Principal, 
 	if err := domain.ValidateTransition("course", session.Status, "canceled"); err != nil {
 		return 0, err
 	}
-	count, err := s.store.CancelSession(ctx, sessionID, reason, session.Version, s.now().AddDate(0, 2, 0))
+	var count int64
+	err = s.store.InTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		count, err = s.store.CancelSessionRows(ctx, tx, sessionID, reason, session.Version, s.now().AddDate(0, 2, 0))
+		if err != nil {
+			return err
+		}
+		return s.audit.Record(ctx, tx, principal.AccountID, requestID, "course_session", sessionID, "course.canceled", "success", map[string]any{"reason": reason, "makeups": count})
+	})
 	if err != nil {
 		return 0, err
 	}
-	err = s.audit.RecordStandalone(ctx, principal.AccountID, requestID, "course_session", sessionID, "course.canceled", "success", map[string]any{"reason": reason, "makeups": count})
-	return count, err
+	return count, nil
 }
