@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS idempotency_keys(id INTEGER PRIMARY KEY, actor_id INTEGER NOT NULL REFERENCES accounts(id), method TEXT NOT NULL, operation TEXT NOT NULL, request_key TEXT NOT NULL, request_hash TEXT NOT NULL, response_code INTEGER, response_body BLOB, status TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(actor_id,method,operation,request_key));
+CREATE TABLE IF NOT EXISTS audit_events(id INTEGER PRIMARY KEY, actor_id INTEGER REFERENCES accounts(id), request_id TEXT NOT NULL, object_type TEXT NOT NULL, object_id INTEGER NOT NULL, action TEXT NOT NULL, result TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS audit_object_idx ON audit_events(object_type,object_id,created_at);
+CREATE INDEX IF NOT EXISTS audit_request_idx ON audit_events(request_id);
+CREATE TABLE IF NOT EXISTS worker_jobs(id INTEGER PRIMARY KEY, kind TEXT NOT NULL, job_key TEXT NOT NULL UNIQUE, payload TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL, available_at TEXT NOT NULL, locked_at TEXT, last_error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS worker_claim_idx ON worker_jobs(status,available_at,id);
