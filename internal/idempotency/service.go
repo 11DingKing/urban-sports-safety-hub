@@ -47,11 +47,19 @@ func Begin(ctx context.Context, tx *sql.Tx, actorID int64, method, operation, ke
 		return nil, err
 	}
 	if !record.ExpiresAt.After(time.Now().UTC()) {
-		refreshed := time.Now().UTC().Add(time.Hour)
-		if _, err := tx.ExecContext(ctx, `UPDATE idempotency_keys SET expires_at=? WHERE actor_id=? AND method=? AND operation=? AND request_key=?`, refreshed.Format(time.RFC3339Nano), actorID, method, operation, key); err != nil {
+		refreshed := expiresAt.UTC()
+		if !refreshed.After(time.Now().UTC()) {
+			refreshed = time.Now().UTC().Add(time.Hour)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE idempotency_keys SET request_hash=?,status='running',response_code=NULL,response_body=NULL,expires_at=? WHERE actor_id=? AND method=? AND operation=? AND request_key=?`, hash, refreshed.Format(time.RFC3339Nano), actorID, method, operation, key); err != nil {
 			return nil, err
 		}
+		record.RequestHash = hash
+		record.Status = "running"
+		record.Code = sql.NullInt64{}
+		record.Body = nil
 		record.ExpiresAt = refreshed
+		return nil, nil
 	}
 	if record.RequestHash != hash {
 		return nil, domain.NewError(domain.KindConflict, "idempotency_payload_mismatch", "idempotency key was used with a different request")

@@ -96,6 +96,100 @@ func TestBeginRejectsPayloadMismatchForExistingKey(t *testing.T) {
 	}
 }
 
+func TestBeginReacquiresExpiredKeyWithDifferentPayload(t *testing.T) {
+	store := idempotencyStore(t)
+	past := time.Now().Add(-time.Hour)
+	if err := inTransaction(t, store, func(tx *sql.Tx) error {
+		_, err := Begin(context.Background(), tx, 1, "POST", "enrollment", "summer-key", RequestHash([]byte("original")), past)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().Exec(`UPDATE idempotency_keys SET status='completed',response_code=200,response_body=? WHERE actor_id=1 AND request_key='summer-key'`, `{"enrollment":1}`); err != nil {
+		t.Fatal(err)
+	}
+	var record *Record
+	err := inTransaction(t, store, func(tx *sql.Tx) error {
+		var err error
+		record, err = Begin(context.Background(), tx, 1, "POST", "enrollment", "summer-key", RequestHash([]byte("different")), time.Now().Add(time.Hour))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("expired key with new payload was not reacquired: %v", err)
+	}
+	if record != nil {
+		t.Fatalf("reacquired key returned stale replay: %+v", record)
+	}
+	var status, hash, body sql.NullString
+	var code sql.NullInt64
+	var expires string
+	if err := store.DB().QueryRow(`SELECT status,request_hash,response_code,response_body,expires_at FROM idempotency_keys WHERE actor_id=1 AND request_key='summer-key'`).Scan(&status, &hash, &code, &body, &expires); err != nil {
+		t.Fatal(err)
+	}
+	if status.String != "running" || hash.String != RequestHash([]byte("different")) || code.Valid || body.Valid {
+		t.Fatalf("stale state retained after reacquire: status=%s hash=%s code=%v body=%v", status.String, hash.String, code, body)
+	}
+	expiry, err := time.Parse(time.RFC3339Nano, expires)
+	if err != nil || !expiry.After(time.Now()) {
+		t.Fatalf("expiry not refreshed: %s", expires)
+	}
+}
+
+func TestBeginReacquiresExpiredRunningKey(t *testing.T) {
+	store := idempotencyStore(t)
+	past := time.Now().Add(-time.Hour)
+	hash := RequestHash([]byte("payload"))
+	if err := inTransaction(t, store, func(tx *sql.Tx) error {
+		_, err := Begin(context.Background(), tx, 1, "POST", "checkout", "abandoned", hash, past)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var record *Record
+	err := inTransaction(t, store, func(tx *sql.Tx) error {
+		var err error
+		record, err = Begin(context.Background(), tx, 1, "POST", "checkout", "abandoned", hash, time.Now().Add(time.Hour))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("expired running key was not reacquired: %v", err)
+	}
+	if record != nil {
+		t.Fatalf("reacquired key returned stale replay: %+v", record)
+	}
+	var status string
+	if err := store.DB().QueryRow(`SELECT status FROM idempotency_keys WHERE actor_id=1 AND request_key='abandoned'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "running" {
+		t.Fatalf("status=%s", status)
+	}
+}
+
+func TestBeginReplayStillServedWhenKeyUnexpired(t *testing.T) {
+	store := idempotencyStore(t)
+	hash := RequestHash([]byte("payload"))
+	_ = inTransaction(t, store, func(tx *sql.Tx) error {
+		_, err := Begin(context.Background(), tx, 1, "POST", "checkout", "key", hash, time.Now().Add(time.Hour))
+		return err
+	})
+	_ = inTransaction(t, store, func(tx *sql.Tx) error {
+		return Complete(context.Background(), tx, 1, "POST", "checkout", "key", 200, []byte(`{"ok":true}`))
+	})
+	var replay *Record
+	err := inTransaction(t, store, func(tx *sql.Tx) error {
+		var err error
+		replay, err = Begin(context.Background(), tx, 1, "POST", "checkout", "key", hash, time.Now().Add(time.Hour))
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay == nil || replay.Status != "completed" || replay.Code.Int64 != 200 || string(replay.Body) != `{"ok":true}` {
+		t.Fatalf("unexpired replay not served: %+v", replay)
+	}
+}
+
 func TestCompleteStoresReplayResponseAndReturnsIsolatedBytes(t *testing.T) {
 	store := idempotencyStore(t)
 	hash := RequestHash([]byte("payload"))
