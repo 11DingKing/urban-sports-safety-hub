@@ -1,0 +1,7 @@
+.git
+.gomark-authoring
+.data
+*.db
+*.db-shm
+*.db-wal
+sports-hub
